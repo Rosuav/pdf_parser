@@ -1,0 +1,19 @@
+objstream: "int" "int" "word" dict "stream" {makeobjstream};
+
+dict: "<<" ">>" {emptydict};
+dict: "<<" dictentries ">>" {taketwo};
+dictentries: "name" value {makedict};
+dictentries: dictentries "name" value {addtodict};
+
+array: "[" "]" {emptyarray};
+array: "[" arrayentries "]" {taketwo};
+arrayentries: value {makearray};
+arrayentries: arrayentries value {appendarray};
+
+value: dict;
+value: array;
+value: "string";
+value: "int";
+value: "real";
+value: "value";
+value: "reference";
