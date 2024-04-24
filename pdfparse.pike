@@ -28,6 +28,8 @@ mapping parse_pdf(string|Stdio.Buffer data) {
 			if (num[1] == "") error("BROKEN PDF: Sign without number following it\n");
 			//There should only be one dot in a float, too, but I can't be bothered checking
 			if (has_value(num[1], '.')) return ({"real", (float)(num[0] + num[1])});
+			//So. Um. If you have an int, then an int (usually zero), then the letter "R",
+			//it's an object reference, NOT an integer. Ain't PDFs fun?
 			return ({"int", (int)(num[0] + num[1])});
 		}
 		if (data->match("(")) {
