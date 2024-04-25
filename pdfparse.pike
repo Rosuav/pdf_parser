@@ -189,7 +189,24 @@ mapping|object get_indirect_object(string data, array objects, int oid) {
 		case 2: {
 			//Compressed object. First, we need to get the object that contains it.
 			mapping parent = get_indirect_object(data, objects, x);
-			werror("Need indirect object %O from %O\n", y, parent);
+			if (!parent->_contents) {
+				//So... officially, what we do is:
+				//1. Parse off the first parent->First bytes, which is a stream of pairs of integers
+				//2. Take the n'th int pair, which should be [oid, ofs] with the correct oid
+				//3. Start at offset (parent->First+ofs) in the decompressed _stream
+				//4. Read one value, which is usually a <<dict>> but might be anything (other than an objref)
+				//What we ACTUALLY do is:
+				//1. Ignore the first parent->First bytes
+				//2. Wrap the entire rest of the stream in an array
+				//3. Assume there's no junk anywhere, and assume that there's precisely one object per slot
+				//4. Return the object at that slot.
+				//According to the spec, the offsets MUST increase as we progress through the slots.
+				//(Note that this does not have to be in OID order.) Assuming that no encoder will put
+				//arbitrary junk between the values (other than whitespace which is ignored), this
+				//simplified decoding method should work.
+				parent->_contents = parse_pdf_object("[" + parent->_stream[parent->First..] + "] endobj");
+			}
+			return parent->_contents[y];
 		}
 	}
 }
@@ -210,6 +227,12 @@ void parse_pdf_file(string file) {
 	mapping xref = parse_xref_stream(data, buf);
 	mapping root = get_indirect_object(data, xref->objects, xref->Root[0]);
 	werror("Root: %O\n", root);
+	//Possibly interesting: root->AcroForm, root->Metadata
+	//Definitely interesting: root->DSS
+	if (root->DSS) {
+		//Document might be signed digitally
+		werror("DSS: %O\n", get_indirect_object(data, xref->objects, root->DSS[0]));
+	}
 }
 
 int main(int argc, array(string) argv) {
