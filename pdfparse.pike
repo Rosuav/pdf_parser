@@ -164,12 +164,13 @@ mapping(string:array|mapping) parse_xref_stream(string data, object buf) {
 	//({0, next, gen}) - free list entry (this OID is free, as is the next one) (closed loop??)
 	//({1, ofs, gen}) - uncompressed objects
 	//({2, oid, idx}) - compressed objects, referenced by another OID
-	int need = xref->Size - sizeof(ret);
+	int need = max(xref->Size, xref->_oid + 1) - sizeof(ret); //HACK: Cope with broken PDF - if our OID is beyond the stated size, allow room for it.
 	if (need > 0) ret += ({0}) * need;
 	ret[xref->_oid] = xref;
 	//The entries are all tuples of three integers, the sizes of which are defined by the W array.
 	string fmt = sprintf("%%%dc%%%dc%%%dc%%s", @xref->W);
 	string entries = xref->_stream;
+	if (!xref->Index) xref->Index = ({0, xref->Size});
 	foreach (xref->Index / 2, [int start, int len]) {
 		for (int oid = start; oid < start + len; ++oid) {
 			if (oid == xref->_oid) continue; //Already got ourselves
