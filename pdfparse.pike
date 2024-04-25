@@ -18,7 +18,7 @@ mapping parse_pdf(string|Stdio.Buffer data) {
 	if (stringp(data)) data = Stdio.Buffer(data);
 	data->read_only();
 	parser->set_error_handler(throw_errors);
-	array|string next() {
+	array|string _next() {
 		if (!sizeof(data)) return "";
 		data->match("%*[\0\t\f \r\n]"); //Ignore whitespace
 		while (data->match("%%%[^\r\n]%*[\0\t\f \r\n]")) ; //Ignore comments (with trailing whitespace)
@@ -29,7 +29,8 @@ mapping parse_pdf(string|Stdio.Buffer data) {
 			//There should only be one dot in a float, too, but I can't be bothered checking
 			if (has_value(num[1], '.')) return ({"real", (float)(num[0] + num[1])});
 			//So. Um. If you have an int, then an int (usually zero), then the letter "R",
-			//it's an object reference, NOT an integer. Ain't PDFs fun?
+			//it's an object reference, NOT an integer. Ain't PDFs fun? See extra handling
+			//below in next() for how this gets coped with.
 			return ({"int", (int)(num[0] + num[1])});
 		}
 		if (data->match("(")) {
@@ -82,7 +83,42 @@ mapping parse_pdf(string|Stdio.Buffer data) {
 		if (word == "true") return ({"value", Val.true});
 		if (word == "false") return ({"value", Val.false});
 		if (word == "null") return ({"value", Val.null});
+		if (word == "R") return "R"; //This token is special; if it ever shows up in the wrong context, it should fail the grammar.
 		return ({"word", word});
+	}
+	array unread = ({ });
+	array|string next() {
+		//Handle object references, which don't fit an LALR(1) grammar due to requiring two-token lookahead
+		if (sizeof(unread) == 2 && unread[1][0] == "int") {
+			//It's a sequence of integers. Grab another token and see if it's an
+			//object reference, otherwise keep going.
+			array|string third = _next();
+			if (third == "R") {
+				array ret = ({"objref", unread[*][1]});
+				unread = ({ });
+				return ret;
+			}
+			unread += ({third});
+			//Otherwise, we'll move one off unread and yield it.
+		}
+		if (sizeof(unread)) {
+			[array|string ret, unread] = Array.shift(unread);
+			return ret;
+		}
+		array|string tok = _next();
+		if (arrayp(tok) && tok[0] == "int") {
+			unread = ({_next()});
+			if (arrayp(unread[0]) && unread[0][0] == "int") {
+				unread += ({_next()});
+				//If the third token from this one is the "R", we have a single object reference
+				if (unread[1] == "R") {
+					tok = ({"objref", tok[1], unread[0][1]});
+					unread = ({ });
+				}
+				//Otherwise, handling above will take care of sequences of integers.
+			}
+		}
+		return tok;
 	}
 	array|string shownext() {array|string ret = next(); werror("TOKEN: %O\n", ret); return ret;}
 	while (shownext() != ""); return 0; //Dump tokens w/o parsing
