@@ -91,9 +91,14 @@ mapping parse_pdf_object(string|Stdio.Buffer data) {
 			//this is an error in the example, and performing no case folding.
 			return ({"name", value});
 		}
-		if (data->match("<<")) return "<<";
+		if (data->match("<")) {
+			if (data->match("<")) return "<<";
+			//Otherwise it's a hex string.
+			string hex = data->match("%[^>]>");
+			if (sizeof(hex) & 1) hex += "0"; //According to the spec, if there's an odd number of digits, an implicit last digit of zero is added. Kinda weird but okay.
+			return ({"string", String.hex2string(hex)}); //Note that whitespace MIGHT be permitted within a byte, but Pike will reject it.
+		}
 		if (data->match(">>")) return ">>";
-		//TODO: Hex strings (single "<" and ">")
 		string word = data->match("%[^][()<>{}/%\0\t\f \r\n]");
 		if (word == "") error("BROKEN PDF: Unexpected token %O\n", data->read(10));
 		if (word == "stream") {
