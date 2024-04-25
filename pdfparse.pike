@@ -13,9 +13,12 @@ array emptyarray() {return ({});}
 array makearray(mixed val) {return ({val});}
 array appendarray(array arr, mixed val) {return arr + ({val});}
 
-mapping makeobjstream(int oid, int gen, string _1, mapping info, string _2, string raw, string _3) {
-	//TODO: Decode?
-	return (["oid": oid, "info": info, "raw": raw]);
+mapping makeobjstream(int oid, int gen, string _1, mapping info, string _2, string data, string _3) {
+	switch (info->Filter) {
+		case "FlateDecode": data = Gz.uncompress(data); break;
+		default: break; //If unknown, leave it raw
+	}
+	return (["oid": oid, "info": info, "stream": data]);
 }
 
 mapping parse_pdf(string|Stdio.Buffer data) {
