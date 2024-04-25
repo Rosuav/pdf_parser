@@ -19,7 +19,10 @@ mapping makeobj(int oid, int gen, string _1, mapping info, string|void _2, strin
 	if (data) {
 		if (arrayp(info->Filter)) error("UNIMPL\n"); //TODO: Handle an array of filters (process them in order)
 		switch (info->Filter) {
-			case "FlateDecode": data = Gz.uncompress(data); break;
+			case "FlateDecode":
+				//TODO: DecodeParms may specify a Predictor
+				data = Gz.uncompress(data);
+				break;
 			default: break; //If unknown, leave it raw
 		}
 		info->_stream = data;
