@@ -1,3 +1,5 @@
+mapping args;
+
 Parser.LR.Parser parser = Parser.LR.GrammarParser.make_parser_from_file("pdf.grammar");
 void throw_errors(int level, string subsystem, string msg, mixed ... args) {if (level >= 2) error(msg, @args);}
 
@@ -245,11 +247,15 @@ void parse_pdf_file(string file) {
 			}
 		}
 	}
+	if (args->i) while (1) {
+		string oid = Stdio.stdin->gets(); if (!oid) break;
+		werror("%O\n", get_indirect_object(data, xref->objects, (int)oid));
+	}
 }
 
 int main(int argc, array(string) argv) {
 	//werror("Parse result: %O\n", parse_pdf_object(Stdio.read_file(argv[1])[94940..])); return 0;
-	mapping args = Arg.parse(argv);
+	args = Arg.parse(argv);
 	if (!sizeof(args[Arg.REST])) {
 		exit(1, "Usage: pike " + argv[0] + " <file> <file> ...\n");
 	}
