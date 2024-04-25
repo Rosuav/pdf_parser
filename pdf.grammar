@@ -1,7 +1,7 @@
-objstream: "int" "int" "word" dict "stream" {makeobjstream};
+objstream: "int" "int" "obj" dict "stream" "streamdata" "endstream" {makeobjstream};
 
 dict: "<<" ">>" {emptydict};
-dict: "<<" dictentries ">>" {taketwo};
+dict: "<<" dictentries ">>" {savedict};
 dictentries: "name" value {makedict};
 dictentries: dictentries "name" value {addtodict};
 

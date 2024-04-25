@@ -1,25 +1,36 @@
 Parser.LR.Parser parser = Parser.LR.GrammarParser.make_parser_from_file("pdf.grammar");
 void throw_errors(int level, string subsystem, string msg, mixed ... args) {if (level >= 2) error(msg, @args);}
 
+//This is a horrible breach of encapsulation. It might be necessary to instantiate something and have a dedicated handler object.
+mapping last_dict;
+
 mixed taketwo(mixed _, mixed val) {return val;}
+mapping savedict(mixed _, mapping val) {return last_dict = val;}
 mapping emptydict() {return ([]);}
-mapping makedict(mixed key, mixed val) {write("Make dict: %O %O\n", key, val); return ([key: val]);}
-mapping addtodict(mapping dict, mixed key, mixed val) {write("Add to dict: %O %O\n", key, val); dict[key] = val; return dict;}
+mapping makedict(mixed key, mixed val) {return ([key: val]);}
+mapping addtodict(mapping dict, mixed key, mixed val) {dict[key] = val; return dict;}
 array emptyarray() {return ({});}
 array makearray(mixed val) {return ({val});}
 array appendarray(array arr, mixed val) {return arr + ({val});}
 
-mapping makeobjstream(int oid, int gen, string type, mapping info, string raw) {
+mapping makeobjstream(int oid, int gen, string _1, mapping info, string _2, string raw, string _3) {
 	//TODO: Decode?
-	return (["oid": oid, "type": type, "info": info, "raw": raw]);
+	return (["oid": oid, "info": info, "raw": raw]);
 }
 
 mapping parse_pdf(string|Stdio.Buffer data) {
 	if (stringp(data)) data = Stdio.Buffer(data);
 	data->read_only();
 	parser->set_error_handler(throw_errors);
+	int streammode;
 	array|string _next() {
 		if (!sizeof(data)) return "";
+		if (streammode) {
+			//NOTE: The "stream" keyword sets this flag, and then savedict() above should be called.
+			//This will give us a reference to the dict-before-stream in last_dict.
+			streammode = 0;
+			return ({"streamdata", data->read(last_dict->Length)});
+		}
 		data->match("%*[\0\t\f \r\n]"); //Ignore whitespace
 		while (data->match("%%%[^\r\n]%*[\0\t\f \r\n]")) ; //Ignore comments (with trailing whitespace)
 		if (string delim = data->match("%1[][{}]")) return delim; //Delimiters are themselves unique tokens.
@@ -78,13 +89,14 @@ mapping parse_pdf(string|Stdio.Buffer data) {
 		string word = data->match("%[^][()<>{}/%\0\t\f \r\n]");
 		if (word == "") error("BROKEN PDF: Unexpected token %O\n", data->read(10));
 		if (word == "stream") {
-			error("UNIMPL\n");
+			streammode = 1;
+			data->match("%[\r]\n"); //After the "stream" keyword, there is an EOL that must be CRLF or LF, but not CR.
 		}
+		if (word == "endobj") return ""; //The endobj token terminates parsing.
 		if (word == "true") return ({"value", Val.true});
 		if (word == "false") return ({"value", Val.false});
 		if (word == "null") return ({"value", Val.null});
-		if (word == "R") return "R"; //This token is special; if it ever shows up in the wrong context, it should fail the grammar.
-		return ({"word", word});
+		return word; //All other words are considered keywords.
 	}
 	array unread = ({ });
 	array|string next() {
@@ -120,9 +132,9 @@ mapping parse_pdf(string|Stdio.Buffer data) {
 		}
 		return tok;
 	}
-	array|string shownext() {array|string ret = next(); werror("TOKEN: %O\n", ret); return ret;}
+	//array|string shownext() {array|string ret = next(); werror("TOKEN: %O\n", ret); return ret;}
 	//while (shownext() != ""); return 0; //Dump tokens w/o parsing
-	return parser->parse(shownext, this);
+	return parser->parse(next, this);
 }
 
 void parse_pdf_file(string file) {
