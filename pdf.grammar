@@ -1,4 +1,5 @@
-objstream: "int" "int" "obj" dict "stream" "streamdata" "endstream" {makeobjstream};
+obj: "int" "int" "obj" dict {makeobj};
+obj: "int" "int" "obj" dict "stream" "streamdata" "endstream" {makeobj};
 
 dict: "<<" ">>" {emptydict};
 dict: "<<" dictentries ">>" {savedict};

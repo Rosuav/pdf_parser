@@ -13,21 +13,26 @@ array emptyarray() {return ({});}
 array makearray(mixed val) {return ({val});}
 array appendarray(array arr, mixed val) {return arr + ({val});}
 
-mapping makeobjstream(int oid, int gen, string _1, mapping info, string _2, string data, string _3) {
-	switch (info->Filter) {
-		case "FlateDecode": data = Gz.uncompress(data); break;
-		default: break; //If unknown, leave it raw
+mapping makeobj(int oid, int gen, string _1, mapping info, string|void _2, string|void data, string|void _3) {
+	if (data) {
+		if (arrayp(info->Filter)) error("UNIMPL\n"); //TODO: Handle an array of filters (process them in order)
+		switch (info->Filter) {
+			case "FlateDecode": data = Gz.uncompress(data); break;
+			default: break; //If unknown, leave it raw
+		}
+		info->_stream = data;
 	}
-	return (["oid": oid, "info": info, "stream": data]);
+	info->_oid = oid;
+	return info;
 }
 
-mapping parse_pdf(string|Stdio.Buffer data) {
+mapping parse_pdf_object(string|Stdio.Buffer data) {
 	if (stringp(data)) data = Stdio.Buffer(data);
 	data->read_only();
 	parser->set_error_handler(throw_errors);
 	int streammode;
 	array|string _next() {
-		if (!sizeof(data)) return "";
+		if (!sizeof(data)) error("BROKEN PDF: Unexpected end of file\n");
 		if (streammode) {
 			//NOTE: The "stream" keyword sets this flag, and then savedict() above should be called.
 			//This will give us a reference to the dict-before-stream in last_dict.
@@ -140,6 +145,41 @@ mapping parse_pdf(string|Stdio.Buffer data) {
 	return parser->parse(next, this);
 }
 
+array parse_xref_stream(string data, object buf) {
+	mapping xref = parse_pdf_object(buf);
+	write("Parse result %O\n", xref);
+	array ret = ({ });
+	if (xref->Prev) ret = parse_xref_stream(data, Stdio.Buffer(data[xref->Prev..]));
+	//The xref data consists of a number of entries of fixed size.
+	//Each entry is one of:
+	//({0, next, gen}) - free list entry (this OID is free, as is the next one) (closed loop??)
+	//({1, ofs, gen}) - uncompressed objects
+	//({2, oid, idx}) - compressed objects, referenced by another OID
+	int need = xref->Size - sizeof(ret);
+	if (need > 0) ret += ({0}) * need;
+	ret[xref->_oid] = xref;
+	//The entries are all tuples of three integers, the sizes of which are defined by the W array.
+	string fmt = sprintf("%%%dc%%%dc%%%dc%%s", @xref->W);
+	string entries = xref->_stream;
+	foreach (xref->Index / 2, [int start, int len]) {
+		for (int oid = start; oid < start + len; ++oid) {
+			if (oid == xref->_oid) continue; //Already got ourselves
+			sscanf(entries, fmt, int type, int x, int y, entries);
+			if (!xref->W[0]) type = 1; //If types are omitted, they are to be assumed to be 1 (uncompressed object).
+			switch (type) {
+				case 0: break; //Free-list entry; don't care.
+				case 1: {
+					write("Uncompressed XREF: %d, gen %d\n", x, y);
+					parse_pdf_object(Stdio.Buffer(data[x..])); break; //Ignore the generation number
+				}
+				case 2: write("Compressed XREF: %d, %d\n", x, y); break;
+				default: error("BROKEN PDF\n");
+			}
+		}
+	}
+	return ret;
+}
+
 void parse_pdf_file(string file) {
 	string f = Stdio.read_file(file);
 	array parts = f / "%%EOF";
@@ -151,22 +191,13 @@ void parse_pdf_file(string file) {
 	// byte position at which data begins. (probably Root object)
 	object buf = Stdio.Buffer(data[startxref..]);
 	//This will start with either an xref table or an xref stream.
-	if (buf->sscanf("xref")) {write("%s: Has xref table\n", file); return;} //Might need a different grammar
-	mapping info = parse_pdf(buf);
-	write("%s: Parse result %O\n", file, info);
-	array strm = buf->sscanf("%d %d obj%[\r\n]<<");
-	if (!strm || sizeof(strm) < 3 || strm[2] == "") {write("%s: ERROR: Malformed xref stream\n", file); return;}
-	write("%s: Has xref stream [%d %d]\n", file, strm[0], strm[1]);
-	//strm[0] is the object ID, strm[1] is the generation(?) - should always be zero (?)
-	mapping strmdict = ([]);
-	while (array entry = buf->sscanf("%[^\r\n ] %[^\r\n]%[\r\n]")) {
-		werror("Entry: %O\n", entry);
-		strmdict[entry[0]] = entry[1];
-	}
-	write("%s: Stream dictionary %O\n%[0]s: Next bytes: %q\n", file, strmdict, buf->read(16));
+	write("File: %s\n", file);
+	if (buf->sscanf("xref")) {write("Has xref table\n"); return;} //Might need a different grammar
+	array xref = parse_xref_stream(data, buf);
 }
 
 int main(int argc, array(string) argv) {
+	//werror("Parse result: %O\n", parse_pdf_object(Stdio.read_file(argv[1])[94940..])); return 0;
 	mapping args = Arg.parse(argv);
 	if (!sizeof(args[Arg.REST])) {
 		exit(1, "Usage: pike " + argv[0] + " <file> <file> ...\n");
