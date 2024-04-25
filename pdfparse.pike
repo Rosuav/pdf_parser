@@ -178,7 +178,7 @@ mapping(string:array|mapping) parse_xref_stream(string data, object buf) {
 	return (["ID": xref->ID, "Root": xref->Root, "objects": ret]);
 }
 
-mapping|object get_indirect_object(string data, array objects, int oid) {
+mixed get_indirect_object(string data, array objects, int oid) {
 	if (mappingp(objects[oid])) return objects[oid];
 	if (!arrayp(objects[oid])) error("Unknown OID slot\n");
 	[int type, int x, int y] = objects[oid];
@@ -231,7 +231,19 @@ void parse_pdf_file(string file) {
 	//Definitely interesting: root->DSS
 	if (root->DSS) {
 		//Document might be signed digitally
-		werror("DSS: %O\n", get_indirect_object(data, xref->objects, root->DSS[0]));
+		//DSS: Document Security Store
+		//DSS->VRI: Validation Related Information (probably irrelevant)
+		//DSS->Certs: Array of certificate objects
+		//DSS->CRLs: Array of revocations (should we check these?)
+		mapping dss = get_indirect_object(data, xref->objects, root->DSS[0]);
+		werror("DSS: %O\n", dss);
+		if (dss->Certs) {
+			array certs = get_indirect_object(data, xref->objects, dss->Certs[0]);
+			foreach (certs, [int oid, int gen]) {
+				string cert = get_indirect_object(data, xref->objects, oid)->_stream;
+				//werror("Cert: %O\n", Standards.X509.decode_certificate(cert));
+			}
+		}
 	}
 }
 
