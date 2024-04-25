@@ -232,7 +232,6 @@ void parse_pdf_file(string file) {
 	if (buf->sscanf("xref")) {write("Has xref table\n"); return;} //Might need a different grammar
 	mapping xref = parse_xref_stream(data, buf);
 	mapping root = get_indirect_object(data, xref->objects, xref->Root[0]);
-	werror("Root: %O\n", root);
 	//Possibly interesting: root->AcroForm, root->Metadata
 	//Definitely interesting: root->DSS
 	if (root->DSS) {
@@ -242,7 +241,6 @@ void parse_pdf_file(string file) {
 		//DSS->Certs: Array of certificate objects
 		//DSS->CRLs: Array of revocations (should we check these?)
 		mapping dss = get_indirect_object(data, xref->objects, root->DSS[0]);
-		werror("DSS: %O\n", dss);
 		if (dss->Certs) {
 			array certs = get_indirect_object(data, xref->objects, dss->Certs[0]);
 			foreach (certs, [int oid, int gen]) {
@@ -250,10 +248,23 @@ void parse_pdf_file(string file) {
 				//werror("Cert: %O\n", Standards.X509.decode_certificate(cert));
 			}
 		}
+		//Certs are all well and good, but how do we locate the signature? What refers to it?
+		//There seems to be root->Pages->Kids[*]->Annots[*]->V which has Type: Sig
+		foreach (get_indirect_object(data, xref->objects, root->Pages[0])->Kids, array kid) {
+			mapping page = get_indirect_object(data, xref->objects, kid[0]);
+			if (page->Annots) foreach (page->Annots, [int anno, int gen]) {
+				object annot = get_indirect_object(data, xref->objects, anno);
+				object V = get_indirect_object(data, xref->objects, annot->V[0]); //Is it always present?
+				if (V->Type == "Sig") write("Appears to have digital signature!\n");
+			}
+		}
 	}
-	if (args->i) while (1) {
-		string oid = Stdio.stdin->gets(); if (!oid) break;
-		werror("%O\n", get_indirect_object(data, xref->objects, (int)oid));
+	if (args->i) {
+		werror("Root: %O\n", root);
+		while (1) {
+			string oid = Stdio.stdin->gets(); if (!oid) break;
+			werror("%O\n", get_indirect_object(data, xref->objects, (int)oid));
+		}
 	}
 }
 
