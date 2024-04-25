@@ -150,11 +150,10 @@ mapping parse_pdf_object(string|Stdio.Buffer data) {
 	return parser->parse(next, this);
 }
 
-array parse_xref_stream(string data, object buf) {
+mapping(string:array|mapping) parse_xref_stream(string data, object buf) {
 	mapping xref = parse_pdf_object(buf);
-	write("Parse result %O\n", xref);
 	array ret = ({ });
-	if (xref->Prev) ret = parse_xref_stream(data, Stdio.Buffer(data[xref->Prev..]));
+	if (xref->Prev) ret = parse_xref_stream(data, Stdio.Buffer(data[xref->Prev..]))->objects;
 	//The xref data consists of a number of entries of fixed size.
 	//Each entry is one of:
 	//({0, next, gen}) - free list entry (this OID is free, as is the next one) (closed loop??)
@@ -171,18 +170,28 @@ array parse_xref_stream(string data, object buf) {
 			if (oid == xref->_oid) continue; //Already got ourselves
 			sscanf(entries, fmt, int type, int x, int y, entries);
 			if (!xref->W[0]) type = 1; //If types are omitted, they are to be assumed to be 1 (uncompressed object).
-			switch (type) {
-				case 0: break; //Free-list entry; don't care.
-				case 1: {
-					write("Uncompressed XREF: %d, gen %d\n", x, y);
-					parse_pdf_object(Stdio.Buffer(data[x..])); break; //Ignore the generation number
-				}
-				case 2: write("Compressed XREF: %d, %d\n", x, y); break;
-				default: error("BROKEN PDF\n");
-			}
+			ret[oid] = ({type, x, y});
+			//To fully decode a type 1: ret[oid] = parse_pdf_object(Stdio.Buffer(data[ret[oid][1]..]))
+			//To fully decode a type 2: First ensure that ret[ret[oid][1]] exists
 		}
 	}
-	return ret;
+	return (["ID": xref->ID, "Root": xref->Root, "objects": ret]);
+}
+
+mapping|object get_indirect_object(string data, array objects, int oid) {
+	if (mappingp(objects[oid])) return objects[oid];
+	if (!arrayp(objects[oid])) error("Unknown OID slot\n");
+	[int type, int x, int y] = objects[oid];
+	switch (type) {
+		default: //Unknown or free list entry, just null.
+		case 0: return objects[oid] = Val.null;
+		case 1: return objects[oid] = parse_pdf_object(Stdio.Buffer(data[x..]));
+		case 2: {
+			//Compressed object. First, we need to get the object that contains it.
+			mapping parent = get_indirect_object(data, objects, x);
+			werror("Need indirect object %O from %O\n", y, parent);
+		}
+	}
 }
 
 void parse_pdf_file(string file) {
@@ -198,7 +207,9 @@ void parse_pdf_file(string file) {
 	//This will start with either an xref table or an xref stream.
 	write("File: %s\n", file);
 	if (buf->sscanf("xref")) {write("Has xref table\n"); return;} //Might need a different grammar
-	array xref = parse_xref_stream(data, buf);
+	mapping xref = parse_xref_stream(data, buf);
+	mapping root = get_indirect_object(data, xref->objects, xref->Root[0]);
+	werror("Root: %O\n", root);
 }
 
 int main(int argc, array(string) argv) {
