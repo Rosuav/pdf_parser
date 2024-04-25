@@ -4,7 +4,7 @@ void throw_errors(int level, string subsystem, string msg, mixed ... args) {if (
 mixed taketwo(mixed _, mixed val) {return val;}
 mapping emptydict() {return ([]);}
 mapping makedict(mixed key, mixed val) {write("Make dict: %O %O\n", key, val); return ([key: val]);}
-mapping addtodict(mapping dict, mixed key, mixed val) {dict[key] = val; return dict;}
+mapping addtodict(mapping dict, mixed key, mixed val) {write("Add to dict: %O %O\n", key, val); dict[key] = val; return dict;}
 array emptyarray() {return ({});}
 array makearray(mixed val) {return ({val});}
 array appendarray(array arr, mixed val) {return arr + ({val});}
@@ -94,7 +94,7 @@ mapping parse_pdf(string|Stdio.Buffer data) {
 			//object reference, otherwise keep going.
 			array|string third = _next();
 			if (third == "R") {
-				array ret = ({"objref", unread[*][1]});
+				array ret = ({"reference", ({unread[*][1]})});
 				unread = ({ });
 				return ret;
 			}
@@ -112,7 +112,7 @@ mapping parse_pdf(string|Stdio.Buffer data) {
 				unread += ({_next()});
 				//If the third token from this one is the "R", we have a single object reference
 				if (unread[1] == "R") {
-					tok = ({"objref", tok[1], unread[0][1]});
+					tok = ({"reference", ({tok[1], unread[0][1]})});
 					unread = ({ });
 				}
 				//Otherwise, handling above will take care of sequences of integers.
@@ -121,8 +121,8 @@ mapping parse_pdf(string|Stdio.Buffer data) {
 		return tok;
 	}
 	array|string shownext() {array|string ret = next(); werror("TOKEN: %O\n", ret); return ret;}
-	while (shownext() != ""); return 0; //Dump tokens w/o parsing
-	return parser->parse(next, this);
+	//while (shownext() != ""); return 0; //Dump tokens w/o parsing
+	return parser->parse(shownext, this);
 }
 
 void parse_pdf_file(string file) {

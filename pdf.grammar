@@ -17,3 +17,4 @@ value: "int";
 value: "real";
 value: "value";
 value: "reference";
+value: "name";
