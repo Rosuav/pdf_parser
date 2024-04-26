@@ -18,10 +18,30 @@ array appendarray(array arr, mixed val) {return arr + ({val});}
 mapping makeobj(int oid, int gen, string _1, mapping info, string|void _2, string|void data, string|void _3) {
 	if (data) {
 		foreach (Array.arrayify(info->Filter), string filter) switch (filter) {
-			case "FlateDecode":
-				//TODO: DecodeParms may specify a Predictor
+			case "FlateDecode": {
 				data = Gz.uncompress(data);
+				//After the deflation, reapply the predictor's predictions...
+				//... most of which I don't yet support.
+				switch (info->DecodeParms->?Predictor) {
+					case 12: { //PNG "Up". Others could be done the same way.
+						//The "Up" predictor subtracts this row from the previous, and
+						//importantly, prepends a "\2" to each row.
+						array rows = data / (info->DecodeParms->Columns + 1);
+						array prev = ({0}) * info->DecodeParms->Columns;
+						string out = "";
+						foreach (rows, string r) {
+							array row = (((array)r[1..])[*] + prev[*])[*] % 256;
+							prev = row;
+							out += (string)row;
+						}
+						data = out;
+						break;
+					}
+					//TODO: Add more predictors as we find them in the wild
+					default: break;
+				}
 				break;
+			}
 			case "DCTDecode": error("UNIMPL - Image: %O\n", Image.JPEG.decode(data));
 			default: break; //If unknown, leave it raw
 		}
