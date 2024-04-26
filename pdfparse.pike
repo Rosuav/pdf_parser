@@ -169,7 +169,7 @@ mapping(string:array|mapping) parse_xref_stream(string data, object buf) {
 				if (type == 'n') table[oid] = ({1, ofs, gen});
 				else table[oid] = ({0, ofs, gen}); //Free-list entries have "next" rather than offset, but same same
 			}
-			if (buf->sscanf("trailer")) break;
+			if (buf->sscanf("%*[\r\n]trailer")) break;
 		}
 		//After the word "trailer" (which has now been consumed), there's a dictionary followed
 		//by the word "startxref", which is defined in the tokenizer as a termination token.
