@@ -302,6 +302,13 @@ void parse_pdf_file(string file) {
 			}
 		}
 	}
+	mixed AcroForm = root->AcroForm;
+	if (arrayp(AcroForm) && sizeof(AcroForm) == 2) AcroForm = get_indirect_object(data, xref->objects, AcroForm[0]);
+	if (mappingp(AcroForm)) foreach (AcroForm->?Fields || ({ }), [int anno, int gen]) {
+		object annot = get_indirect_object(data, xref->objects, anno);
+		object V = get_indirect_object(data, xref->objects, annot->V[0]); //Is it?
+		if (V->Type == "Sig") write("Appears to have digital signature!\n");
+	}
 	if (args->i) {
 		werror("Root: %O\n", root);
 		while (1) {
