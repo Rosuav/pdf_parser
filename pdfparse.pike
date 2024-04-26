@@ -110,7 +110,7 @@ mapping parse_pdf_object(string|Stdio.Buffer data) {
 			streammode = 1;
 			data->match("%[\r]\n"); //After the "stream" keyword, there is an EOL that must be CRLF or LF, but not CR.
 		}
-		if (word == "endobj") return ""; //The endobj token terminates parsing.
+		if (word == "endobj" || word == "startxref") return ""; //These tokens terminate parsing.
 		if (word == "true") return ({"value", Val.true});
 		if (word == "false") return ({"value", Val.false});
 		if (word == "null") return ({"value", Val.null});
@@ -156,6 +156,24 @@ mapping parse_pdf_object(string|Stdio.Buffer data) {
 }
 
 mapping(string:array|mapping) parse_xref_stream(string data, object buf) {
+	array table;
+	if (buf->sscanf("xref")) {
+		//It's an xref table rather than a stream.
+		table = ({ });
+		while (sizeof(buf)) {
+			[int start, int len] = buf->sscanf("%d %d%*[\r\n]");
+			string entries = buf->read(len * 20);
+			if (sizeof(table) < start + len) table += ({0}) * (start + len - sizeof(table));
+			for (int oid = start; oid < start + len; ++oid) {
+				sscanf(entries, "%d %d %c%*[\r\n]%s", int ofs, int gen, int type, entries);
+				if (type == 'n') table[oid] = ({1, ofs, gen});
+				else table[oid] = ({0, ofs, gen}); //Free-list entries have "next" rather than offset, but same same
+			}
+			if (buf->sscanf("trailer")) break;
+		}
+		//After the word "trailer" (which has now been consumed), there's a dictionary followed
+		//by the word "startxref", which is defined in the tokenizer as a termination token.
+	}
 	mapping xref = parse_pdf_object(buf);
 	array ret = ({ });
 	if (xref->Prev) ret = parse_xref_stream(data, Stdio.Buffer(data[xref->Prev..]))->objects;
@@ -166,20 +184,26 @@ mapping(string:array|mapping) parse_xref_stream(string data, object buf) {
 	//({2, oid, idx}) - compressed objects, referenced by another OID
 	int need = max(xref->Size, xref->_oid + 1) - sizeof(ret); //HACK: Cope with broken PDF - if our OID is beyond the stated size, allow room for it.
 	if (need > 0) ret += ({0}) * need;
-	ret[xref->_oid] = xref;
-	//The entries are all tuples of three integers, the sizes of which are defined by the W array.
-	string fmt = sprintf("%%%dc%%%dc%%%dc%%s", @xref->W);
-	string entries = xref->_stream;
-	if (!xref->Index) xref->Index = ({0, xref->Size});
-	foreach (xref->Index / 2, [int start, int len]) {
-		for (int oid = start; oid < start + len; ++oid) {
-			if (oid == xref->_oid) continue; //Already got ourselves
-			sscanf(entries, fmt, int type, int x, int y, entries);
-			if (!xref->W[0]) type = 1; //If types are omitted, they are to be assumed to be 1 (uncompressed object).
-			ret[oid] = ({type, x, y});
-			//To fully decode a type 1: ret[oid] = parse_pdf_object(Stdio.Buffer(data[ret[oid][1]..]))
-			//To fully decode a type 2: First ensure that ret[ret[oid][1]] exists
+	if (xref->_oid) ret[xref->_oid] = xref;
+	if (xref->_stream) {
+		//The entries are all tuples of three integers, the sizes of which are defined by the W array.
+		string fmt = sprintf("%%%dc%%%dc%%%dc%%s", @xref->W);
+		string entries = xref->_stream;
+		if (!xref->Index) xref->Index = ({0, xref->Size});
+		foreach (xref->Index / 2, [int start, int len]) {
+			for (int oid = start; oid < start + len; ++oid) {
+				if (oid == xref->_oid) continue; //Already got ourselves
+				sscanf(entries, fmt, int type, int x, int y, entries);
+				if (!xref->W[0]) type = 1; //If types are omitted, they are to be assumed to be 1 (uncompressed object).
+				ret[oid] = ({type, x, y});
+				//To fully decode a type 1: ret[oid] = parse_pdf_object(Stdio.Buffer(data[ret[oid][1]..]))
+				//To fully decode a type 2: First ensure that ret[ret[oid][1]] exists... see get_indirect_object()
+			}
 		}
+	}
+	if (table) {
+		if (sizeof(table) > sizeof(ret)) ret += ({0}) * (sizeof(table) - sizeof(ret));
+		foreach (table; int oid; mixed entry) if (entry) ret[oid] = entry; //Latest table always takes precedence over older ones.
 	}
 	return (["ID": xref->ID, "Root": xref->Root, "objects": ret]);
 }
@@ -229,7 +253,6 @@ void parse_pdf_file(string file) {
 	object buf = Stdio.Buffer(data[startxref..]);
 	//This will start with either an xref table or an xref stream.
 	write("File: %s\n", file);
-	if (buf->sscanf("xref")) {write("Has xref table\n"); return;} //Might need a different grammar
 	mapping xref = parse_xref_stream(data, buf);
 	mapping root = get_indirect_object(data, xref->objects, xref->Root[0]);
 	//Possibly interesting: root->AcroForm, root->Metadata

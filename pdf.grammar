@@ -1,6 +1,7 @@
 obj: "int" "int" "obj" dict {makeobj};
 obj: "int" "int" "obj" dict "stream" "streamdata" "endstream" {makeobj};
 obj: array; /* HACK */
+obj: dict;
 
 dict: "<<" ">>" {emptydict};
 dict: "<<" dictentries ">>" {savedict};
