@@ -17,12 +17,12 @@ array appendarray(array arr, mixed val) {return arr + ({val});}
 
 mapping makeobj(int oid, int gen, string _1, mapping info, string|void _2, string|void data, string|void _3) {
 	if (data) {
-		if (arrayp(info->Filter)) error("UNIMPL\n"); //TODO: Handle an array of filters (process them in order)
-		switch (info->Filter) {
+		foreach (Array.arrayify(info->Filter), string filter) switch (filter) {
 			case "FlateDecode":
 				//TODO: DecodeParms may specify a Predictor
 				data = Gz.uncompress(data);
 				break;
+			case "DCTDecode": error("UNIMPL - Image: %O\n", Image.JPEG.decode(data));
 			default: break; //If unknown, leave it raw
 		}
 		info->_stream = data;
