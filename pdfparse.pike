@@ -330,7 +330,7 @@ class PDF {
 				if (page->Annots) foreach (page->Annots, pdf_reference anno) {
 					object annot = deref(anno);
 					object V = deref(annot->V); //Is it always present?
-					if (V->Type == "Sig") write("Appears to have digital signature!\n");
+					if (V->Type == "Sig") write("Appears to have digital signature! %O\n", V->Cert && Standards.X509.decode_certificate(V->Cert));
 				}
 			}
 		}
@@ -338,13 +338,30 @@ class PDF {
 		if (mappingp(AcroForm)) foreach (AcroForm->?Fields || ({ }), pdf_reference anno) {
 			mapping annot = deref(anno);
 			mapping V = deref(annot->V); //Is it?
-			if (V->Type == "Sig") write("Appears to have digital signature!\n");
+			if (V->Type == "Sig") write("Appears to have digital signature! %O\n", V->Cert && Standards.X509.decode_certificate(V->Cert));
 		}
 		if (args->i) {
 			werror("Root: %O\n", root);
+			pdf_value last = Val.null;
 			while (1) {
-				string oid = Stdio.stdin->gets(); if (!oid) break;
-				werror("%O\n", deref(objects[(int)oid], (int)oid));
+				string cmd = Stdio.stdin->gets(); if (!cmd) break;
+				if (int oid = (int)cmd) werror("%O\n", last = deref(objects[oid], oid));
+				if (mappingp(last) && last[cmd]) werror("%O\n", last = last[cmd]);
+				if (cmd == "X509" || cmd == "x509") {
+					werror("%O\n", Standards.X509.decode_certificate(last));
+					//Still not working. Not sure what the Contents is here but it does definitely contain certs.
+					//What is "SubFilter": "adbe.pkcs7.detached"?
+					string cert = last;
+					for (int i = 1; i < sizeof(cert); ++i) {
+						if (!catch {
+							object buf = Stdio.Buffer(cert[i..]);
+							Standards.ASN1.Decode.der_decode(buf, (mapping)Standards.ASN1.Decode.universal_types);
+							werror("Residue: %O\n", sizeof(buf));
+							if (mixed c = Standards.X509.decode_certificate(cert[i..<sizeof(buf)])) werror("%d..<%d: %O\n", i, sizeof(buf), c);
+						}) break;
+					}
+				}
+				if (cmd == "save") Stdio.write_file("raw.dump", last);
 			}
 		}
 	}
