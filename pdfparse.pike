@@ -1,5 +1,18 @@
 mapping args;
 
+class ObjectReference(int oid, int gen) {
+	constant is_reference = 1;
+	protected string _sprintf(int type) {return type == 'O' && sprintf("ObjectReference(%d, %d)", oid, gen);}
+}
+
+class CompressedObjectReference(int container, int idx) {
+	constant is_reference = 1, is_compressed = 1;
+	protected string _sprintf(int type) {return type == 'O' && sprintf("CompressedObjectReference(%d, %d)", container, idx);}
+}
+
+typedef mapping|array|string|int|float|Val.Null pdf_value;
+typedef pdf_value|ObjectReference|CompressedObjectReference pdf_reference;
+
 Parser.LR.Parser parser = Parser.LR.GrammarParser.make_parser_from_file("pdf.grammar");
 void throw_errors(int level, string subsystem, string msg, mixed ... args) {if (level >= 2) error(msg, @args);}
 
@@ -15,7 +28,9 @@ array emptyarray() {return ({});}
 array makearray(mixed val) {return ({val});}
 array appendarray(array arr, mixed val) {return arr + ({val});}
 
-mapping makeobj(int oid, int gen, string _1, mapping info, string|void _2, string|void data, string|void _3) {
+mapping makeobj(int oid, int gen, string _1, pdf_value info) {return info;}
+
+mapping makestreamobj(int oid, int gen, string _1, mapping info, string|void _2, string|void data, string|void _3) {
 	if (data) {
 		foreach (Array.arrayify(info->Filter), string filter) switch (filter) {
 			case "FlateDecode": {
@@ -51,7 +66,7 @@ mapping makeobj(int oid, int gen, string _1, mapping info, string|void _2, strin
 	return info;
 }
 
-mapping parse_pdf_object(string|Stdio.Buffer data) {
+pdf_value parse_pdf_object(string|Stdio.Buffer data) {
 	if (stringp(data)) data = Stdio.Buffer(data);
 	data->read_only();
 	parser->set_error_handler(throw_errors);
@@ -144,7 +159,7 @@ mapping parse_pdf_object(string|Stdio.Buffer data) {
 			//object reference, otherwise keep going.
 			array|string third = _next();
 			if (third == "R") {
-				array ret = ({"reference", ({unread[*][1]})});
+				array ret = ({"reference", ObjectReference(@unread[*][1])});
 				unread = ({ });
 				return ret;
 			}
@@ -162,7 +177,7 @@ mapping parse_pdf_object(string|Stdio.Buffer data) {
 				unread += ({_next()});
 				//If the third token from this one is the "R", we have a single object reference
 				if (unread[1] == "R") {
-					tok = ({"reference", ({tok[1], unread[0][1]})});
+					tok = ({"reference", ObjectReference(tok[1], unread[0][1])});
 					unread = ({ });
 				}
 				//Otherwise, handling above will take care of sequences of integers.
@@ -186,8 +201,8 @@ mapping(string:array|mapping) parse_xref_stream(string data, object buf) {
 			if (sizeof(table) < start + len) table += ({0}) * (start + len - sizeof(table));
 			for (int oid = start; oid < start + len; ++oid) {
 				sscanf(entries, "%d %d %c%*[\r\n]%s", int ofs, int gen, int type, entries);
-				if (type == 'n') table[oid] = ({1, ofs, gen});
-				else table[oid] = ({0, ofs, gen}); //Free-list entries have "next" rather than offset, but same same
+				if (type == 'n') table[oid] = ObjectReference(ofs, gen);
+				else table[oid] = Val.null; //Free-list entries have "next" rather than offset, but we don't care here
 			}
 			if (buf->sscanf("%*[\r\n]trailer")) break;
 		}
@@ -215,7 +230,11 @@ mapping(string:array|mapping) parse_xref_stream(string data, object buf) {
 				if (oid == xref->_oid) continue; //Already got ourselves
 				sscanf(entries, fmt, int type, int x, int y, entries);
 				if (!xref->W[0]) type = 1; //If types are omitted, they are to be assumed to be 1 (uncompressed object).
-				ret[oid] = ({type, x, y});
+				switch (type) {
+					case 0: ret[oid] = Val.null; break;
+					case 1: ret[oid] = ObjectReference(x, y); break;
+					case 2: ret[oid] = CompressedObjectReference(x, y); break;
+				}
 				//To fully decode a type 1: ret[oid] = parse_pdf_object(Stdio.Buffer(data[ret[oid][1]..]))
 				//To fully decode a type 2: First ensure that ret[ret[oid][1]] exists... see get_indirect_object()
 			}
@@ -228,37 +247,39 @@ mapping(string:array|mapping) parse_xref_stream(string data, object buf) {
 	return (["ID": xref->ID, "Root": xref->Root, "objects": ret]);
 }
 
-mixed get_indirect_object(string data, array objects, int oid) {
-	if (mappingp(objects[oid])) return objects[oid];
-	if (!arrayp(objects[oid])) error("Unknown OID slot\n");
-	[int type, int x, int y] = objects[oid];
-	switch (type) {
-		default: //Unknown or free list entry, just null.
-		case 0: return objects[oid] = Val.null;
-		case 1: return objects[oid] = parse_pdf_object(Stdio.Buffer(data[x..]));
-		case 2: {
-			//Compressed object. First, we need to get the object that contains it.
-			mapping parent = get_indirect_object(data, objects, x);
-			if (!parent->_contents) {
-				//So... officially, what we do is:
-				//1. Parse off the first parent->First bytes, which is a stream of pairs of integers
-				//2. Take the n'th int pair, which should be [oid, ofs] with the correct oid
-				//3. Start at offset (parent->First+ofs) in the decompressed _stream
-				//4. Read one value, which is usually a <<dict>> but might be anything (other than an objref)
-				//What we ACTUALLY do is:
-				//1. Ignore the first parent->First bytes
-				//2. Wrap the entire rest of the stream in an array
-				//3. Assume there's no junk anywhere, and assume that there's precisely one object per slot
-				//4. Return the object at that slot.
-				//According to the spec, the offsets MUST increase as we progress through the slots.
-				//(Note that this does not have to be in OID order.) Assuming that no encoder will put
-				//arbitrary junk between the values (other than whitespace which is ignored), this
-				//simplified decoding method should work.
-				parent->_contents = parse_pdf_object("[" + parent->_stream[parent->First..] + "] endobj");
-			}
-			return parent->_contents[y];
+pdf_value get_indirect_object(string data, array objects, int oid) {
+	pdf_reference obj = objects[oid];
+	if (!objectp(obj) || !obj->is_reference) return obj;
+	if (obj->is_compressed) {
+		//Compressed object. First, we need to get the object that contains it.
+		mapping parent = get_indirect_object(data, objects, obj->container);
+		if (!parent->_contents) {
+			//So... officially, what we do is:
+			//1. Parse off the first parent->First bytes, which is a stream of pairs of integers
+			//2. Take the n'th int pair, which should be [oid, ofs] with the correct oid
+			//3. Start at offset (parent->First+ofs) in the decompressed _stream
+			//4. Read one value, which is usually a <<dict>> but might be anything (other than an objref)
+			//What we ACTUALLY do is:
+			//1. Ignore the first parent->First bytes
+			//2. Wrap the entire rest of the stream in an array
+			//3. Assume there's no junk anywhere, and assume that there's precisely one object per slot
+			//4. Return the object at that slot.
+			//According to the spec, the offsets MUST increase as we progress through the slots.
+			//(Note that this does not have to be in OID order.) Assuming that no encoder will put
+			//arbitrary junk between the values (other than whitespace which is ignored), this
+			//simplified decoding method should work.
+			parent->_contents = parse_pdf_object("[" + parent->_stream[parent->First..] + "] endobj");
 		}
+		return parent->_contents[obj->idx];
 	}
+	//NOTE: This isn't quite the same sort of ObjectReference as can be found inside other objects;
+	//instead, it's actually an offset+generation pair. But close enough.
+	return objects[oid] = parse_pdf_object(Stdio.Buffer(data[obj->oid..]));
+}
+
+pdf_value deref(string data, array objects, pdf_reference obj) {
+	if (!objectp(obj) || !obj->is_reference) return obj;
+	return get_indirect_object(data, objects, obj->oid);
 }
 
 void parse_pdf_file(string file) {
@@ -274,7 +295,7 @@ void parse_pdf_file(string file) {
 	//This will start with either an xref table or an xref stream.
 	write("File: %s\n", file);
 	mapping xref = parse_xref_stream(data, buf);
-	mapping root = get_indirect_object(data, xref->objects, xref->Root[0]);
+	mapping root = deref(data, xref->objects, xref->Root);
 	//Possibly interesting: root->AcroForm, root->Metadata
 	//Definitely interesting: root->DSS
 	if (root->DSS) {
@@ -283,11 +304,11 @@ void parse_pdf_file(string file) {
 		//DSS->VRI: Validation Related Information (probably irrelevant)
 		//DSS->Certs: Array of certificate objects
 		//DSS->CRLs: Array of revocations (should we check these?)
-		mapping dss = get_indirect_object(data, xref->objects, root->DSS[0]);
+		mapping dss = deref(data, xref->objects, root->DSS);
 		if (dss->Certs) {
-			array certs = get_indirect_object(data, xref->objects, dss->Certs[0]);
-			foreach (certs, [int oid, int gen]) {
-				string cert = get_indirect_object(data, xref->objects, oid)->_stream;
+			array certs = deref(data, xref->objects, dss->Certs);
+			foreach (certs, pdf_reference c) {
+				string cert = deref(data, xref->objects, c)->_stream;
 				//werror("Cert: %O\n", Standards.X509.decode_certificate(cert));
 			}
 		}
@@ -295,18 +316,18 @@ void parse_pdf_file(string file) {
 		//There seems to be root->Pages->Kids[*]->Annots[*]->V which has Type: Sig
 		foreach (get_indirect_object(data, xref->objects, root->Pages[0])->Kids, array kid) {
 			mapping page = get_indirect_object(data, xref->objects, kid[0]);
-			if (page->Annots) foreach (page->Annots, [int anno, int gen]) {
-				object annot = get_indirect_object(data, xref->objects, anno);
-				object V = get_indirect_object(data, xref->objects, annot->V[0]); //Is it always present?
+			if (page->Annots) foreach (page->Annots, pdf_reference anno) {
+				object annot = deref(data, xref->objects, anno);
+				object V = deref(data, xref->objects, annot->V); //Is it always present?
 				if (V->Type == "Sig") write("Appears to have digital signature!\n");
 			}
 		}
 	}
 	mixed AcroForm = root->AcroForm;
 	if (arrayp(AcroForm) && sizeof(AcroForm) == 2) AcroForm = get_indirect_object(data, xref->objects, AcroForm[0]);
-	if (mappingp(AcroForm)) foreach (AcroForm->?Fields || ({ }), [int anno, int gen]) {
-		object annot = get_indirect_object(data, xref->objects, anno);
-		object V = get_indirect_object(data, xref->objects, annot->V[0]); //Is it?
+	if (mappingp(AcroForm)) foreach (AcroForm->?Fields || ({ }), pdf_reference anno) {
+		mapping annot = deref(data, xref->objects, anno);
+		mapping V = deref(data, xref->objects, annot->V); //Is it?
 		if (V->Type == "Sig") write("Appears to have digital signature!\n");
 	}
 	if (args->i) {

@@ -1,5 +1,5 @@
-obj: "int" "int" "obj" dict {makeobj};
-obj: "int" "int" "obj" dict "stream" "streamdata" "endstream" {makeobj};
+obj: "int" "int" "obj" value {makeobj};
+obj: "int" "int" "obj" dict "stream" "streamdata" "endstream" {makestreamobj};
 obj: array; /* HACK */
 obj: dict;
 
