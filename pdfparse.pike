@@ -1,8 +1,16 @@
 mapping args;
 
+//Inside other objects, there can be references to indirect objects.
 class ObjectReference(int oid, int gen) {
 	constant is_reference = 1;
 	protected string _sprintf(int type) {return type == 'O' && sprintf("ObjectReference(%d, %d)", oid, gen);}
+}
+
+//In the xref table/stream, there can be references to either uncompressed or compressed objects.
+//During decoding, some of these will be replaced with non-references, allowing faster repeated lookups.
+class UncompressedObjectReference(int ofs, int gen) {
+	constant is_reference = 1, is_uncompressed = 1;
+	protected string _sprintf(int type) {return type == 'O' && sprintf("UncompressedObjectReference(%d, %d)", ofs, gen);}
 }
 
 class CompressedObjectReference(int container, int idx) {
@@ -11,7 +19,7 @@ class CompressedObjectReference(int container, int idx) {
 }
 
 typedef mapping|array|string|int|float|Val.Null pdf_value;
-typedef pdf_value|ObjectReference|CompressedObjectReference pdf_reference;
+typedef pdf_value|ObjectReference|UncompressedObjectReference|CompressedObjectReference pdf_reference;
 
 Parser.LR.Parser parser = Parser.LR.GrammarParser.make_parser_from_file("pdf.grammar");
 void throw_errors(int level, string subsystem, string msg, mixed ... args) {if (level >= 2) error(msg, @args);}
@@ -191,7 +199,10 @@ pdf_value parse_pdf_object(string|Stdio.Buffer data) {
 }
 
 class PDF {
-	mapping(string:array|mapping) parse_xref_stream(string data, object buf) {
+	string data; //Raw data read from the file
+	array objects; //Full object list, parsed from the crossreference table (or stream)
+
+	mapping(string:array|mapping) parse_xref_stream(object buf) {
 		array table;
 		if (buf->sscanf("xref")) {
 			//It's an xref table rather than a stream.
@@ -202,7 +213,7 @@ class PDF {
 				if (sizeof(table) < start + len) table += ({0}) * (start + len - sizeof(table));
 				for (int oid = start; oid < start + len; ++oid) {
 					sscanf(entries, "%d %d %c%*[\r\n]%s", int ofs, int gen, int type, entries);
-					if (type == 'n') table[oid] = ObjectReference(ofs, gen);
+					if (type == 'n') table[oid] = UncompressedObjectReference(ofs, gen);
 					else table[oid] = Val.null; //Free-list entries have "next" rather than offset, but we don't care here
 				}
 				if (buf->sscanf("%*[\r\n]trailer")) break;
@@ -212,7 +223,7 @@ class PDF {
 		}
 		mapping xref = parse_pdf_object(buf);
 		array ret = ({ });
-		if (xref->Prev) ret = parse_xref_stream(data, Stdio.Buffer(data[xref->Prev..]))->objects;
+		if (xref->Prev) ret = parse_xref_stream(Stdio.Buffer(data[xref->Prev..]))->objects;
 		//The xref data consists of a number of entries of fixed size.
 		//Each entry is one of:
 		//({0, next, gen}) - free list entry (this OID is free, as is the next one) (closed loop??)
@@ -233,11 +244,11 @@ class PDF {
 					if (!xref->W[0]) type = 1; //If types are omitted, they are to be assumed to be 1 (uncompressed object).
 					switch (type) {
 						case 0: ret[oid] = Val.null; break;
-						case 1: ret[oid] = ObjectReference(x, y); break;
+						case 1: ret[oid] = UncompressedObjectReference(x, y); break;
 						case 2: ret[oid] = CompressedObjectReference(x, y); break;
 					}
 					//To fully decode a type 1: ret[oid] = parse_pdf_object(Stdio.Buffer(data[ret[oid][1]..]))
-					//To fully decode a type 2: First ensure that ret[ret[oid][1]] exists... see get_indirect_object()
+					//To fully decode a type 2: First ensure that ret[ret[oid][1]] exists... see deref()
 				}
 			}
 		}
@@ -248,12 +259,12 @@ class PDF {
 		return (["ID": xref->ID, "Root": xref->Root, "objects": ret]);
 	}
 
-	pdf_value get_indirect_object(string data, array objects, int oid) {
-		pdf_reference obj = objects[oid];
+	//Pass the oid to autocache back into that slot, otherwise not required
+	pdf_value deref(pdf_reference obj, int|void oid) {
 		if (!objectp(obj) || !obj->is_reference) return obj;
 		if (obj->is_compressed) {
 			//Compressed object. First, we need to get the object that contains it.
-			mapping parent = get_indirect_object(data, objects, obj->container);
+			mapping parent = deref(objects[obj->container], obj->container);
 			if (!parent->_contents) {
 				//So... officially, what we do is:
 				//1. Parse off the first parent->First bytes, which is a stream of pairs of integers
@@ -273,20 +284,18 @@ class PDF {
 			}
 			return parent->_contents[obj->idx];
 		}
-		//NOTE: This isn't quite the same sort of ObjectReference as can be found inside other objects;
-		//instead, it's actually an offset+generation pair. But close enough.
-		return objects[oid] = parse_pdf_object(Stdio.Buffer(data[obj->oid..]));
-	}
-
-	pdf_value deref(string data, array objects, pdf_reference obj) {
-		if (!objectp(obj) || !obj->is_reference) return obj;
-		return get_indirect_object(data, objects, obj->oid);
+		if (obj->is_uncompressed) {
+			pdf_value ret = parse_pdf_object(Stdio.Buffer(data[obj->ofs..]));
+			if (oid) objects[oid] = ret;
+			return ret;
+		}
+		return deref(objects[obj->oid], obj->oid);
 	}
 
 	protected void create(string filename) {
 		string f = Stdio.read_file(filename);
 		array parts = f / "%%EOF";
-		string data = parts[.. < 1] * "%%EOF";
+		data = parts[.. < 1] * "%%EOF";
 		array lastlines = replace(replace(data[<64..], "\r\n", "\n"), "\r", "\n") / "\n";
 		// assert lastlines[-1] == "";
 		// assert lastlines[-3] == "startxref" or "startxref\r";
@@ -295,8 +304,9 @@ class PDF {
 		object buf = Stdio.Buffer(data[startxref..]);
 		//This will start with either an xref table or an xref stream.
 		write("File: %s\n", filename);
-		mapping xref = parse_xref_stream(data, buf);
-		mapping root = deref(data, xref->objects, xref->Root);
+		mapping xref = parse_xref_stream(buf);
+		objects = xref->objects; //A lot of things will need this.
+		mapping root = deref(xref->Root);
 		//Possibly interesting: root->AcroForm, root->Metadata
 		//Definitely interesting: root->DSS
 		if (root->DSS) {
@@ -305,37 +315,36 @@ class PDF {
 			//DSS->VRI: Validation Related Information (probably irrelevant)
 			//DSS->Certs: Array of certificate objects
 			//DSS->CRLs: Array of revocations (should we check these?)
-			mapping dss = deref(data, xref->objects, root->DSS);
+			mapping dss = deref(root->DSS);
 			if (dss->Certs) {
-				array certs = deref(data, xref->objects, dss->Certs);
+				array certs = deref(dss->Certs);
 				foreach (certs, pdf_reference c) {
-					string cert = deref(data, xref->objects, c)->_stream;
+					string cert = deref(c)->_stream;
 					//werror("Cert: %O\n", Standards.X509.decode_certificate(cert));
 				}
 			}
 			//Certs are all well and good, but how do we locate the signature? What refers to it?
 			//There seems to be root->Pages->Kids[*]->Annots[*]->V which has Type: Sig
-			foreach (get_indirect_object(data, xref->objects, root->Pages[0])->Kids, array kid) {
-				mapping page = get_indirect_object(data, xref->objects, kid[0]);
+			foreach (deref(root->Pages)->Kids, array kid) {
+				mapping page = deref(kid);
 				if (page->Annots) foreach (page->Annots, pdf_reference anno) {
-					object annot = deref(data, xref->objects, anno);
-					object V = deref(data, xref->objects, annot->V); //Is it always present?
+					object annot = deref(anno);
+					object V = deref(annot->V); //Is it always present?
 					if (V->Type == "Sig") write("Appears to have digital signature!\n");
 				}
 			}
 		}
-		mixed AcroForm = root->AcroForm;
-		if (arrayp(AcroForm) && sizeof(AcroForm) == 2) AcroForm = get_indirect_object(data, xref->objects, AcroForm[0]);
+		mixed AcroForm = deref(root->AcroForm);
 		if (mappingp(AcroForm)) foreach (AcroForm->?Fields || ({ }), pdf_reference anno) {
-			mapping annot = deref(data, xref->objects, anno);
-			mapping V = deref(data, xref->objects, annot->V); //Is it?
+			mapping annot = deref(anno);
+			mapping V = deref(annot->V); //Is it?
 			if (V->Type == "Sig") write("Appears to have digital signature!\n");
 		}
 		if (args->i) {
 			werror("Root: %O\n", root);
 			while (1) {
 				string oid = Stdio.stdin->gets(); if (!oid) break;
-				werror("%O\n", get_indirect_object(data, xref->objects, (int)oid));
+				werror("%O\n", deref(objects[(int)oid], (int)oid));
 			}
 		}
 	}
