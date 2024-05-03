@@ -293,7 +293,11 @@ class PDF {
 	}
 
 	void show_signature(mapping V) {
-		if (V->Type == "Sig") write("Appears to have digital signature! %O\n", V->Cert && Standards.X509.decode_certificate(V->Cert));
+		if (!V || V->Type != "Sig") return;
+		write("Appears to have digital signature! %O Filter %O/%O\n",
+			V->Cert && Standards.X509.decode_certificate(V->Cert),
+			V->Filter, V->SubFilter,
+		);
 	}
 
 	protected void create(string filename) {
