@@ -292,6 +292,10 @@ class PDF {
 		return deref(objects[obj->oid], obj->oid);
 	}
 
+	void show_signature(mapping V) {
+		if (V->Type == "Sig") write("Appears to have digital signature! %O\n", V->Cert && Standards.X509.decode_certificate(V->Cert));
+	}
+
 	protected void create(string filename) {
 		string f = Stdio.read_file(filename);
 		array parts = f / "%%EOF";
@@ -329,16 +333,14 @@ class PDF {
 				mapping page = deref(kid);
 				if (page->Annots) foreach (page->Annots, pdf_reference anno) {
 					object annot = deref(anno);
-					object V = deref(annot->V); //Is it always present?
-					if (V->Type == "Sig") write("Appears to have digital signature! %O\n", V->Cert && Standards.X509.decode_certificate(V->Cert));
+					show_signature(deref(annot->V)); //Is it always present?
 				}
 			}
 		}
 		mixed AcroForm = deref(root->AcroForm);
 		if (mappingp(AcroForm)) foreach (AcroForm->?Fields || ({ }), pdf_reference anno) {
 			mapping annot = deref(anno);
-			mapping V = deref(annot->V); //Is it?
-			if (V->Type == "Sig") write("Appears to have digital signature! %O\n", V->Cert && Standards.X509.decode_certificate(V->Cert));
+			show_signature(deref(annot->V)); //Is it?
 		}
 		if (args->i) {
 			werror("Root: %O\n", root);
